@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pi Pac</title>
+  <style>
+    :root{
+      --bg:#0b0f1a;--ink:#e8f0ff;--accent:#ffd54a;--danger:#ff4d6d;--good:#66ffa6;--wall:#123;--tunnel:#0a1324
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;display:grid;place-items:center;background:radial-gradient(1200px 600px at 50% -10%,#142035,var(--bg));
+      color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Inter,Arial,sans-serif
+    }
+    .wrap{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap;justify-content:center}
+    canvas{background:linear-gradient(180deg,var(--tunnel),#06101f);border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,.45),inset 0 0 0 2px rgba(255,255,255,.06)}
+    .ui{min-width:280px;max-width:360px}
+    .card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:16px 16px 6px;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+    h1{font-size:22px;margin:0 0 4px}
+    .muted{opacity:.8;font-size:13px;margin:0 0 12px}
+    .row{display:flex;gap:12px;align-items:center;justify-content:space-between}
+    .btn{appearance:none;border:0;border-radius:12px;padding:12px 14px;font-weight:700;cursor:pointer;color:#081018;background:var(--accent);box-shadow:0 6px 16px rgba(255,213,74,.35)}
+    .btn:active{transform:translateY(1px)}
+    .pill{display:inline-flex;gap:8px;align-items:center;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);padding:6px 10px;border-radius:999px;font-size:12px}
+    .kbd{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;background:#0b1529;border-radius:6px;padding:2px 6px;border:1px solid rgba(255,255,255,.12)}
+    .legend{display:grid;grid-template-columns:18px 1fr;gap:8px 10px;font-size:13px;margin:10px 0}
+    .dot,.power,.fruit,.ghost1,.ghost2,.ghost3,.ghost4,.me{width:14px;height:14px;border-radius:50%}
+    .dot{background:var(--accent);opacity:.9}
+    .power{background:var(--good)}
+    .fruit{background:var(--danger)}
+    .ghost1{background:#ff5c5c}.ghost2{background:#ffd166}.ghost3{background:#5ad7ff}.ghost4{background:#c08bff}
+    .me{background:#ffea00}
+    .foot{opacity:.6;font-size:12px;margin-top:8px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="560" height="640" aria-label="Pac style game"></canvas>
+    <aside class="ui">
+      <div class="card">
+        <h1>Pi Pac</h1>
+        <p class="muted">Um mini jogo estilo Pac‑Man, pronto para hospedar no Pi Develop. Funciona em desktop e mobile.</p>
+        <div class="row" style="margin-bottom:8px">
+          <button id="start" class="btn">▶️ Jogar / Reiniciar</button>
+          <span class="pill">Nível <span id="lvl">1</span></span>
+        </div>
+        <div class="row">
+          <span class="pill">Pontuação <strong id="score">0</strong></span>
+          <span class="pill">Vidas <strong id="lives">3</strong></span>
+        </div>
+        <div class="legend">
+          <div class="dot"></div><div>pontos</div>
+          <div class="power"></div><div>poder (fantasmas comestíveis)</div>
+          <div class="fruit"></div><div>fruta bônus</div>
+          <div class="me"></div><div>você — setas ou <span class="kbd">WASD</span></div>
+          <div class="ghost1"></div><div>fantasmas — fuja quando azuis!</div>
+        </div>
+        <p class="foot">Toque na tela para joystick virtual no celular. Código em um único arquivo <span class="kbd">index.html</span>.</p>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+  // ====== CONFIGURAÇÃO GERAL ======
+  const TILE = 20;                     // tamanho do bloco em px
+  const COLS = 28, ROWS = 32;          // grade do labirinto
+  const SPEED_BASE = 1.2;              // pixels por frame (ajustado por nível)
+  const POWER_TIME = 7.5;              // segundos de poder
+  const FRUIT_TIME = 12;               // aparece após X s
+  const FRAMERATE = 60;                // alvo
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  canvas.width = COLS * TILE; canvas.height = ROWS * TILE;
+
+  // UI
+  const uiScore = document.getElementById('score');
+  const uiLives = document.getElementById('lives');
+  const uiLevel = document.getElementById('lvl');
+
+  // Sons simples (WebAudio) — bipes leves para manter single-file
+  const AudioCtx = window.AudioContext || window.webkitAudioContext; 
+  const audio = new AudioCtx();
+  const beep = (freq=440, dur=0.07, type='sine', gain=0.03) => {
+    const o = audio.createOscillator();
+    const g = audio.createGain();
+    o.type = type; o.frequency.value = freq; g.gain.value = gain;
+    o.connect(g); g.connect(audio.destination); o.start(); o.stop(audio.currentTime + dur);
+  };
+
+  // ====== LABIRINTO ======
+  // 0 = vazio, 1 = parede, 2 = ponto, 3 = poder, 4 = portão do covil, 5 = fruto
+  // grade 28 x 32 – inspirada, mas simplificada
+  const MAZE_TEMPLATE = [
+    "1111111111111111111111111111",
+    "1222222221111111222222222221",
+    "1211111121111111211111111121",
+    "1213333121222211212333333121",
+    "1211111121211111212111111121",
+    "1222222221211111212222222221",
+    "1211111121211111212111111121",
+    "1211111121222211212111111121",
+    "1222222222114411222222222221",
+    "1111111121111111211111111111",
+    "1111111121111111211111111111",
+    "1112222222222222222222221111",
+    "1112111112111111211111121111",
+    "1112133332111111213333211111",
+    "1112111112222241221111121111",
+    "1112222221111111212222221111",
+    "1112111111111111211111121111",
+    "1112133332222222223333211111",
+    "1112111112111111211111121111",
+    "1112222222222222222222221111",
+    "1111111111111111111111111111",
+    "1111111111111111111111111111",
+    "1222222222221111222222222221",
+    "1211111111121111211111111121",
+    "1211111111121111211111111121",
+    "1212222222222222222222222121",
+    "1212111111111111111111112121",
+    "1212133333333333333333212121",
+    "1212111111111111111111112121",
+    "1222222222222222222222222221",
+    "1111111111111111111111111111",
+    "1111111111111111111111111111",
+  ].map(row=>row.split('').map(c=>parseInt(c,10)));
+
+  // ====== ENTIDADES ======
+  const dirs = {left:{x:-1,y:0}, right:{x:1,y:0}, up:{x:0,y:-1}, down:{x:0,y:1}};
+  const opposites = {left:'right', right:'left', up:'down', down:'up'};
+
+  function cell(x,y){return maze[y]?.[x] ?? 1}
+  function isWall(x,y){return cell(x,y)===1}
+  function isGate(x,y){return cell(x,y)===4}
+
+  function drawRoundedRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+
+  class Actor{
+    constructor(x,y,color){this.x=x;this.y=y;this.dir='left';this.speed=SPEED_BASE;this.color=color;this.nextDir=null;}
+    get cx(){return Math.round(this.x)}; get cy(){return Math.round(this.y)}
+    get tx(){return Math.round(this.x/TILE)}; get ty(){return Math.round(this.y/TILE)}
+    atCenter(){return Math.abs((this.x%TILE)-TILE/2)<0.5 && Math.abs((this.y%TILE)-TILE/2)<0.5}
+    canGo(dirName){const d=dirs[dirName]; const nx=Math.floor((this.x+d.x)/TILE + 0.5)+ (d.x>0?1:0); const ny=Math.floor((this.y+d.y)/TILE + 0.5)+ (d.y>0?1:0);
+      return !isWall(nx,ny) && !isGate(nx,ny)}
+    step(){
+      const d = dirs[this.dir]; this.x += d.x*this.speed; this.y += d.y*this.speed;
+      // túneis horizontais
+      if(this.x < 0) this.x = COLS*TILE-1; if(this.x >= COLS*TILE) this.x = 0;
+    }
+  }
+
+  class Player extends Actor{
+    constructor(x,y){super(x,y,'#ffea00'); this.mouth=0;}
+    update(){
+      // virar na grade
+      if(this.nextDir && this.atCenter() && this.canGo(this.nextDir)) this.dir=this.nextDir;
+      if(!this.canGo(this.dir) && this.atCenter()) return; // parado se bate
+      this.step(); this.mouth=(this.mouth+0.15)%1;
+      eatAt(this.tx,this.ty);
+    }
+    draw(){
+      const r=TILE*0.8/2; const angle = (Math.sin(this.mouth*Math.PI)*0.45);
+      const start = angle + (this.dir==='right'?0:this.dir==='down'?Math.PI/2:this.dir==='left'?Math.PI:this.dir==='up'? -Math.PI/2:0);
+      ctx.fillStyle=this.color; ctx.beginPath();
+      ctx.moveTo(this.x+TILE/2,this.y+TILE/2);
+      ctx.arc(this.x+TILE/2,this.y+TILE/2,r,start, start+Math.PI*2 - angle*2, false);
+      ctx.closePath(); ctx.fill();
+      // olho
+      ctx.fillStyle="#111"; ctx.beginPath(); ctx.arc(this.x+TILE/2 + (this.dir==='right'?4:this.dir==='left'?-4:0), this.y+TILE/2 - (this.dir==='down'?4:this.dir==='up'?-4:0), 2.5,0,Math.PI*2); ctx.fill();
+    }
+  }
+
+  class Ghost extends Actor{
+    constructor(x,y,color){super(x,y,color); this.mode='scatter'; this.fright=0; this.spawnX=x; this.spawnY=y; this.dir='left'; this.scatterTarget={x:1,y:1}}
+    update(){
+      if(this.fright>0){this.fright-=1/FRAMERATE}
+      // escolher direção em interseção
+      if(this.atCenter()){
+        const options = ['left','right','up','down'].filter(d=>this.canGo(d) && d!==opposites[this.dir]);
+        let choice;
+        if(this.fright>0){ // fugir do jogador
+          choice = options.sort((a,b)=>distDirAway(a)-distDirAway(b))[0];
+        } else if(game.mode==='play'){
+          // 60% perseguir, 40% aleatório
+          if(Math.random()<0.6) choice = options.sort((a,b)=>distDir(a)-distDir(b))[0];
+          else choice = options[Math.floor(Math.random()*options.length)]
+        } else {
+          choice = options[Math.floor(Math.random()*options.length)]
+        }
+        if(choice) this.dir = choice;
+      }
+      if(!this.canGo(this.dir) && this.atCenter()){
+        const options = ['left','right','up','down'].filter(d=>this.canGo(d));
+        if(options.length) this.dir = options[Math.floor(Math.random()*options.length)];
+      }
+      this.step();
+    }
+    draw(){
+      const x=this.x+TILE/2, y=this.y+TILE/2; const r=TILE*0.8/2; const w=r*2; const h=r*2.2;
+      ctx.fillStyle = this.fright>0 ? '#4aa3ff' : this.color;
+      drawRoundedRect(x-w/2,y-h/2,w,h,8); ctx.fill();
+      // olhinhos
+      ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(x-5,y-2,4,0,Math.PI*2); ctx.arc(x+5,y-2,4,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#112'; ctx.beginPath();
+      const dx = player.x>x?2:player.x<x?-2:0; const dy = player.y>y?2:player.y<y?-2:0;
+      ctx.arc(x-5+dx,y-2+dy,2,0,Math.PI*2); ctx.arc(x+5+dx,y-2+dy,2,0,Math.PI*2); ctx.fill();
+    }
+  }
+
+  function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+  function distDir(dirName){const d=dirs[dirName]; const nx=ghost.tx+d.x, ny=ghost.ty+d.y; return Math.hypot(nx-player.tx, ny-player.ty)}
+  function distDirAway(dirName){const d=dirs[dirName]; const nx=ghost.tx+d.x, ny=ghost.ty+d.y; return -Math.hypot(nx-player.tx, ny-player.ty)}
+
+  // ====== ESTADO DO JOGO ======
+  let maze, player, ghosts, score, lives, level, pellets, powerLeft, fruitTimer, fruitPos=null;
+  const game = {mode:'ready', t:0}
+
+  function reset(levelUp=false){
+    maze = MAZE_TEMPLATE.map(r=>r.map(v=>v===1||v===4?v: (v===3?3:2))); // repõe pontos e poderes; paredes e portão ficam
+    // limpar áreas iniciais
+    // área do covil
+    for(let y=13;y<=18;y++) for(let x=10;x<=17;x++) if(maze[y]&&maze[y][x]!==1) maze[y][x]=0;
+    // área spawn player
+    for(let y=24;y<=26;y++) for(let x=13;x<=15;x++) if(maze[y]&&maze[y][x]!==1) maze[y][x]=0;
+
+    score = levelUp?score:0; lives = levelUp?lives:3; level = levelUp?level:1;
+    uiScore.textContent=score; uiLives.textContent=lives; uiLevel.textContent=level;
+
+    // player
+    player = new Player(14*TILE+TILE/2, 25*TILE+TILE/2);
+    player.speed = SPEED_BASE + (level-1)*0.1;
+
+    // ghosts
+    ghosts = [
+      new Ghost(14*TILE+TILE/2, 15*TILE+TILE/2, '#ff5c5c'),
+      new Ghost(13*TILE+TILE/2, 15*TILE+TILE/2, '#ffd166'),
+      new Ghost(15*TILE+TILE/2, 15*TILE+TILE/2, '#5ad7ff'),
+      new Ghost(14*TILE+TILE/2, 16*TILE+TILE/2, '#c08bff'),
+    ];
+    ghosts.forEach(g=>g.speed = player.speed*0.96 + Math.random()*0.1);
+
+    pellets = countPellets();
+    powerLeft = 0; fruitTimer = 0; fruitPos=null;
+    game.mode='ready'; game.t=0;
+  }
+
+  function countPellets(){ let c=0; for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++) if(maze[y][x]===2||maze[y][x]===3) c++; return c }
+
+  function eatAt(x,y){
+    if(maze[y]?.[x]===2){ maze[y][x]=0; score+=10; uiScore.textContent=score; beep(800,0.05,'triangle',0.02); pellets--; if(pellets<=0) nextLevel(); }
+    else if(maze[y]?.[x]===3){ maze[y][x]=0; score+=50; uiScore.textContent=score; powerLeft=POWER_TIME; ghosts.forEach(g=>g.fright=POWER_TIME); beep(300,0.15,'square',0.03) }
+    else if(maze[y]?.[x]===5){ maze[y][x]=0; score+=100; uiScore.textContent=score; beep(600,0.12,'sawtooth',0.03) }
+  }
+
+  function nextLevel(){ level++; uiLevel.textContent=level; reset(true) }
+
+  function loseLife(){ lives--; uiLives.textContent=lives; beep(100,0.25,'sine',0.04); if(lives<=0){ game.mode='over' } else { // reposiciona
+      player.x=14*TILE+TILE/2; player.y=25*TILE+TILE/2; player.dir='left';
+      ghosts.forEach((g,i)=>{g.x=(14+(i%2?1:-1))*TILE+TILE/2; g.y=(15+(i>1?1:0))*TILE+TILE/2; g.dir='left'; g.fright=0});
+      game.mode='ready'; game.t=0;
+    }
+  }
+
+  // ====== INPUT ======
+  const keys={};
+  window.addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true; if(audio.state==='suspended') audio.resume()});
+  window.addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+  function handleInput(){
+    if(keys['arrowleft']||keys['a']) player.nextDir='left';
+    if(keys['arrowright']||keys['d']) player.nextDir='right';
+    if(keys['arrowup']||keys['w']) player.nextDir='up';
+    if(keys['arrowdown']||keys['s']) player.nextDir='down';
+  }
+
+  // Joystick virtual (mobile)
+  let touchStart=null;
+  canvas.addEventListener('touchstart',e=>{touchStart=[e.touches[0].clientX,e.touches[0].clientY]; if(audio.state==='suspended') audio.resume()},{passive:true});
+  canvas.addEventListener('touchmove',e=>{
+    if(!touchStart) return; const dx=e.touches[0].clientX-touchStart[0]; const dy=e.touches[0].clientY-touchStart[1];
+    if(Math.abs(dx)>Math.abs(dy)) player.nextDir = dx>10?'right':dx<-10?'left':player.nextDir;
+    else player.nextDir = dy>10?'down':dy<-10?'up':player.nextDir;
+  },{passive:true});
+  canvas.addEventListener('touchend',()=>touchStart=null,{passive:true});
+
+  document.getElementById('start').onclick=()=>{ if(game.mode==='over'){ level=1; lives=3; score=0;} reset(); game.mode='play' };
+
+  // ====== LOOP ======
+  function update(){
+    handleInput();
+    if(game.mode==='ready'){ game.t++; if(game.t>FRAMERATE*0.8) game.mode='play'; }
+    if(game.mode==='play'){
+      player.update();
+      ghosts.forEach(g=>{ghost=g; g.update()}); // ghost variável usada em distDir
+
+      // colisões
+      ghosts.forEach(g=>{
+        if(dist({x:player.x,y:player.y},{x:g.x,y:g.y}) < TILE*0.6){
+          if(g.fright>0){ score+=200; uiScore.textContent=score; g.x=g.spawnX; g.y=g.spawnY; g.fright=0; beep(520,0.12,'triangle',0.03) }
+          else { loseLife() }
+        }
+      })
+
+      // temporizadores
+      if(powerLeft>0){ powerLeft-=1/FRAMERATE }
+      fruitTimer += 1/FRAMERATE; if(!fruitPos && fruitTimer>FRUIT_TIME){
+        // encontra um ponto vazio para fruta
+        for(let attempts=0; attempts<200; attempts++){
+          const fx=2+Math.floor(Math.random()*(COLS-4)); const fy=2+Math.floor(Math.random()*(ROWS-6));
+          if(maze[fy][fx]===0){ maze[fy][fx]=5; fruitPos={x:fx,y:fy}; break }
+        }
+      }
+    }
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    // fundo de estrelas leve
+    for(let i=0;i<40;i++){ ctx.fillStyle='rgba(255,255,255,.02)'; ctx.fillRect(((i*73)%canvas.width), ((i*137)%canvas.height), 2,2) }
+
+    // labirinto
+    for(let y=0;y<ROWS;y++){
+      for(let x=0;x<COLS;x++){
+        const v = maze[y][x];
+        if(v===1){ // parede
+          ctx.fillStyle = '#0b2b4a';
+          ctx.fillRect(x*TILE,y*TILE,TILE,TILE);
+          ctx.strokeStyle = '#3bd1ff22'; ctx.lineWidth=2; ctx.strokeRect(x*TILE+1,y*TILE+1,TILE-2,TILE-2);
+        } else if(v===2){ // ponto
+          ctx.fillStyle = '#ffd54a';
+          ctx.beginPath(); ctx.arc(x*TILE+TILE/2,y*TILE+TILE/2,2.4,0,Math.PI*2); ctx.fill();
+        } else if(v===3){ // poder
+          ctx.fillStyle = '#66ffa6';
+          ctx.beginPath(); ctx.arc(x*TILE+TILE/2,y*TILE+TILE/2,5,0,Math.PI*2); ctx.fill();
+        } else if(v===5){ // fruta
+          ctx.fillStyle = '#ff4d6d';
+          ctx.beginPath(); ctx.arc(x*TILE+TILE/2,y*TILE+TILE/2,5,0,Math.PI*2); ctx.fill();
+          ctx.fillStyle = '#fff'; ctx.fillRect(x*TILE+TILE/2-1,y*TILE+TILE/2-3,2,2);
+        }
+      }
+    }
+
+    // gate do covil
+    ctx.fillStyle='#224463';
+    for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++) if(maze[y][x]===4) ctx.fillRect(x*TILE+4,y*TILE+TILE/2-2,TILE-8,4);
+
+    // atores
+    player.draw(); ghosts.forEach(g=>g.draw());
+
+    // overlays
+    if(game.mode==='ready') drawBanner('PRONTO!');
+    else if(game.mode==='over') drawBanner('FIM DE JOGO');
+
+    if(powerLeft>0){ ctx.globalAlpha = 0.08 + 0.06*Math.sin(game.t/8); ctx.fillStyle='#66ffa6'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.globalAlpha=1 }
+  }
+
+  function drawBanner(text){
+    ctx.save();
+    ctx.fillStyle='rgba(0,0,0,.35)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.translate(canvas.width/2, canvas.height*0.28);
+    ctx.fillStyle='#ffffff'; ctx.font='bold 42px system-ui,Segoe UI,Roboto,Arial'; ctx.textAlign='center'; ctx.shadowColor='#000'; ctx.shadowBlur=16;
+    ctx.fillText(text,0,0);
+    ctx.restore();
+  }
+
+  // ====== RENDERIZAÇÃO ======
+  function loop(){ update(); draw(); game.t++; requestAnimationFrame(loop) }
+  reset(); draw(); loop();
+  </script>
+</body>
+</html>
